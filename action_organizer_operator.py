@@ -29,7 +29,7 @@ def poll_rig_object(self, object):
     if object.type != "ARMATURE":
         return False
     
-    properties = bpy.context.window_manager.action_organizer
+    properties = bpy.context.scene.action_organizer
     if active_group_index_is_valid(properties):
         active_group = properties.action_groups[properties.active_action_group_index]
         if any(x for x in active_group.action_assignments if x.assigned_rig_object == object):
@@ -62,7 +62,7 @@ class CreateActionGroupOperator(bpy.types.Operator):
     name: bpy.props.StringProperty(default="Action group")
 
     def execute(self, context):
-        properties = context.window_manager.action_organizer
+        properties = context.scene.action_organizer
         new_group = properties.action_groups.add()
         new_group.name = self.name
         return {"FINISHED"}
@@ -75,11 +75,11 @@ class RemoveActionGroupOperator(bpy.types.Operator):
 
     @classmethod
     def poll(self, context):
-        properties = context.window_manager.action_organizer
+        properties = context.scene.action_organizer
         return active_group_index_is_valid(properties)
     
     def execute(self, context):
-        properties = context.window_manager.action_organizer
+        properties = context.scene.action_organizer
         index = properties.active_action_group_index
         properties.action_groups.remove(index)
         if properties.active_action_group_index >= index:
@@ -94,11 +94,11 @@ class CreateActionAssignmentOperator(bpy.types.Operator):
 
     @classmethod
     def poll(self, context):
-        properties = context.window_manager.action_organizer
+        properties = context.scene.action_organizer
         return active_group_index_is_valid(properties)
 
     def execute(self, context):
-        properties = context.window_manager.action_organizer
+        properties = context.scene.action_organizer
         index = properties.active_action_group_index
         action_group = properties.action_groups[index]
         action_group.action_assignments.add()
@@ -114,11 +114,11 @@ class RemoveActionAssignmentOperator(bpy.types.Operator):
 
     @classmethod
     def poll(self, context):
-        properties = context.window_manager.action_organizer
+        properties = context.scene.action_organizer
         return active_group_index_is_valid(properties)
 
     def execute(self, context):
-        properties = context.window_manager.action_organizer
+        properties = context.scene.action_organizer
         group_index = properties.active_action_group_index
         action_group = properties.action_groups[group_index]
         action_group.action_assignments.remove(self.action_assignment_index)
@@ -134,15 +134,15 @@ class SelectActionAssignmentOperator(bpy.types.Operator):
 
     @classmethod
     def poll(self, context):
-        properties = context.window_manager.action_organizer
+        properties = context.scene.action_organizer
         return active_group_index_is_valid(properties)
 
     def execute(self, context):
-        properties = context.window_manager.action_organizer
+        properties = context.scene.action_organizer
         group_index = properties.active_action_group_index
 
         action_group = properties.action_groups[group_index]
-        
+
         if not context.mode == "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         
@@ -180,7 +180,7 @@ class ActiveActionGroupSelectorOperator(bpy.types.Operator):
         return {"FINISHED"}
     
     def draw(self, context):
-        properties = context.window_manager.action_organizer
+        properties = context.scene.action_organizer
         layout = self.layout
 
         main_row = layout.row()
@@ -207,7 +207,7 @@ class ActionGroupEditorOperator(bpy.types.Operator):
 
     @classmethod
     def poll(self, context):
-        properties = context.window_manager.action_organizer
+        properties = context.scene.action_organizer
         return active_group_index_is_valid(properties)
     
     def execute(self, context):
@@ -217,7 +217,7 @@ class ActionGroupEditorOperator(bpy.types.Operator):
         return context.window_manager.invoke_popup(self)
     
     def draw(self, context):
-        properties = context.window_manager.action_organizer
+        properties = context.scene.action_organizer
 
         layout = self.layout
         layout.ui_units_x = 25
@@ -249,7 +249,7 @@ class ActionGroupEditorOperator(bpy.types.Operator):
 #
 
 def menu_function(self, context):
-    properties = context.window_manager.action_organizer
+    properties = context.scene.action_organizer
     layout = self.layout
 
     row = layout.row(align=True)
@@ -285,11 +285,11 @@ classes = (
 def register():
     for c in classes:
         bpy.utils.register_class(c)
-    bpy.types.WindowManager.action_organizer = bpy.props.PointerProperty(type=ActionOrganizerProperties)
+    bpy.types.Scene.action_organizer = bpy.props.PointerProperty(type=ActionOrganizerProperties)
     bpy.types.DOPESHEET_HT_header.append(menu_function)
 
 def unregister():
     for c in classes:
         bpy.utils.unregister_class(c)
-    del bpy.types.WindowManager.action_organizer
+    del bpy.types.Scene.action_organizer
     bpy.types.DOPESHEET_HT_header.remove(menu_function)
