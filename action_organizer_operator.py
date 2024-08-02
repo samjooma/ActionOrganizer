@@ -5,7 +5,7 @@ import os
 # Helper functions.
 #
 
-def action_group_index_is_valid(properties):
+def active_group_index_is_valid(properties):
     group_count = len(properties.action_groups)
     index = properties.active_action_group_index
     return group_count > 0 and index >= 0 and index < group_count
@@ -26,7 +26,16 @@ class ACTION_ORGANIZER_UL_ActionGroup(bpy.types.UIList):
 #
 
 def poll_rig_object(self, object):
-    return object.type == "ARMATURE"
+    if object.type != "ARMATURE":
+        return False
+    
+    properties = bpy.context.window_manager.action_organizer
+    if active_group_index_is_valid(properties):
+        active_group = properties.action_groups[properties.active_action_group_index]
+        if any(x for x in active_group.action_assignments if x.assigned_rig_object == object):
+            return False
+    
+    return True
 
 class ActionAssignmentProperty(bpy.types.PropertyGroup):
     action: bpy.props.PointerProperty(type=bpy.types.Action)
@@ -67,7 +76,7 @@ class RemoveActionGroupOperator(bpy.types.Operator):
     @classmethod
     def poll(self, context):
         properties = context.window_manager.action_organizer
-        return action_group_index_is_valid(properties)
+        return active_group_index_is_valid(properties)
     
     def execute(self, context):
         properties = context.window_manager.action_organizer
@@ -86,7 +95,7 @@ class CreateActionAssignmentOperator(bpy.types.Operator):
     @classmethod
     def poll(self, context):
         properties = context.window_manager.action_organizer
-        return action_group_index_is_valid(properties)
+        return active_group_index_is_valid(properties)
 
     def execute(self, context):
         properties = context.window_manager.action_organizer
@@ -106,7 +115,7 @@ class RemoveActionAssignmentOperator(bpy.types.Operator):
     @classmethod
     def poll(self, context):
         properties = context.window_manager.action_organizer
-        return action_group_index_is_valid(properties)
+        return active_group_index_is_valid(properties)
 
     def execute(self, context):
         properties = context.window_manager.action_organizer
@@ -115,8 +124,8 @@ class RemoveActionAssignmentOperator(bpy.types.Operator):
         action_group.action_assignments.remove(self.action_assignment_index)
         return {"FINISHED"}
     
-class SelectActionInGroupOperator(bpy.types.Operator):
-    bl_idname = "action_organizer.select_action_in_group"
+class SelectActionAssignmentOperator(bpy.types.Operator):
+    bl_idname = "action_organizer.select_action_assignment"
     bl_label = "Select action"
     bl_description = "Description"
     bl_options = {"REGISTER"}
@@ -126,35 +135,35 @@ class SelectActionInGroupOperator(bpy.types.Operator):
     @classmethod
     def poll(self, context):
         properties = context.window_manager.action_organizer
-        return action_group_index_is_valid(properties)
+        return active_group_index_is_valid(properties)
 
     def execute(self, context):
         properties = context.window_manager.action_organizer
         group_index = properties.active_action_group_index
+
         action_group = properties.action_groups[group_index]
-        action_assignment = action_group.action_assignments[self.action_assignment_index]
+        
+        if not context.mode == "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        
+        for i, action_assignment in enumerate(action_group.action_assignments):
+            action = action_assignment.action
+            assigned_rig_object = action_assignment.assigned_rig_object
 
-        action = action_assignment.action
-        assigned_rig_object = action_assignment.assigned_rig_object
+            # Set action.
+            if action != None:
+                if assigned_rig_object.animation_data == None:
+                    assigned_rig_object.animation_data_create()
+                assigned_rig_object.animation_data.action = action
 
-        if assigned_rig_object != None:
-            if not context.mode == "OBJECT":
-                bpy.ops.object.mode_set(mode="OBJECT")
+            # Select the rig.
+            if i == self.action_assignment_index:
+                bpy.ops.object.select_all(action="DESELECT")
+                assigned_rig_object.select_set(True)
+                context.view_layer.objects.active = assigned_rig_object
 
-            # Select the new rig.
-            bpy.ops.object.select_all(action="DESELECT")
-            assigned_rig_object.select_set(True)
-            context.view_layer.objects.active = assigned_rig_object
-
-            # Set mode to pose mode.
-            bpy.ops.object.mode_set(mode="POSE")
-
-        if action != None:
-            selected_objects = context.view_layer.objects.selected
-            for rig_object in [x for x in selected_objects if x.type == "ARMATURE"]:
-                if rig_object.animation_data == None:
-                    rig_object.animation_data_create()
-                rig_object.animation_data.action = action
+        # Set mode to pose mode.
+        bpy.ops.object.mode_set(mode="POSE")
 
         return {"FINISHED"}
     
@@ -199,7 +208,7 @@ class ActionGroupEditorOperator(bpy.types.Operator):
     @classmethod
     def poll(self, context):
         properties = context.window_manager.action_organizer
-        return action_group_index_is_valid(properties)
+        return active_group_index_is_valid(properties)
     
     def execute(self, context):
         return {"FINISHED"}
@@ -220,7 +229,7 @@ class ActionGroupEditorOperator(bpy.types.Operator):
             action_data_row = layout.row()
 
             # Button to select action and its assigned object.
-            select_action_operator = action_data_row.operator(SelectActionInGroupOperator.bl_idname, text="Select")
+            select_action_operator = action_data_row.operator(SelectActionAssignmentOperator.bl_idname, text="Select")
             select_action_operator.action_assignment_index = action_assignment_index
 
             # Selection boxes for action and rig object.
@@ -251,7 +260,7 @@ def menu_function(self, context):
 
     split = row.split(factor=0.75, align=True)
 
-    if action_group_index_is_valid(properties):
+    if active_group_index_is_valid(properties):
         group_index = properties.active_action_group_index
         group = properties.action_groups[group_index]
         split.prop(group, "name", text="")
@@ -268,7 +277,7 @@ classes = (
     RemoveActionGroupOperator,
     CreateActionAssignmentOperator,
     RemoveActionAssignmentOperator,
-    SelectActionInGroupOperator,
+    SelectActionAssignmentOperator,
     ActiveActionGroupSelectorOperator,
     ActionGroupEditorOperator,
 )
