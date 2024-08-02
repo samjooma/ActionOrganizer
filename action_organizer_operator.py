@@ -14,7 +14,7 @@ def action_group_index_is_valid(properties):
 # UI classes.
 #
 
-class ACTIONORGANIZER_UL_ActionGroup(bpy.types.UIList):
+class ACTION_ORGANIZER_UL_ActionGroup(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
         if self.layout_type in {"DEFAULT", "COMPACT", "GRID"}:
             row = layout.row(align=True)
@@ -177,7 +177,7 @@ class ActiveActionGroupSelectorOperator(bpy.types.Operator):
         main_row = layout.row()
 
         main_row.template_list(
-            listtype_name="ACTIONORGANIZER_UL_ActionGroup",
+            listtype_name="ACTION_ORGANIZER_UL_ActionGroup",
             list_id="",
             dataptr=properties,
             propname="action_groups",
@@ -216,13 +216,8 @@ class ActionGroupEditorOperator(bpy.types.Operator):
         group_index = properties.active_action_group_index
         active_group = properties.action_groups[group_index]
 
-        # Group label.
-        group_label_row = layout.row()
-        group_label_row.prop(data=active_group, property="name", text="")
-
-        actions_box = layout.box()
         for action_assignment_index, action_assignment in enumerate(active_group.action_assignments):
-            action_data_row = actions_box.row()
+            action_data_row = layout.row()
 
             # Button to select action and its assigned object.
             select_action_operator = action_data_row.operator(SelectActionInGroupOperator.bl_idname, text="Select")
@@ -237,21 +232,35 @@ class ActionGroupEditorOperator(bpy.types.Operator):
             remove_action_operator.action_assignment_index = action_assignment_index
 
         # Button to create a new action assigment.
-        create_action_row = actions_box.row()
-        assignment_operator = create_action_row.operator(CreateActionAssignmentOperator.bl_idname, icon="ADD")
+        create_action_row = layout.row()
+        create_action_row.operator(CreateActionAssignmentOperator.bl_idname, icon="ADD")
 
 #
 # Registration.
 #
 
 def menu_function(self, context):
+    properties = context.window_manager.action_organizer
     layout = self.layout
+
     row = layout.row(align=True)
-    row.operator(ActiveActionGroupSelectorOperator.bl_idname)
-    row.operator(ActionGroupEditorOperator.bl_idname)
+
+    # Button for selecting action group.
+    row.ui_units_x = 10
+    row.operator(ActiveActionGroupSelectorOperator.bl_idname, text="", icon="DOWNARROW_HLT")
+
+    split = row.split(factor=0.75, align=True)
+
+    if action_group_index_is_valid(properties):
+        group_index = properties.active_action_group_index
+        group = properties.action_groups[group_index]
+        split.prop(group, "name", text="")
+    else:
+        split.operator(CreateActionGroupOperator.bl_idname, text="New")
+    split.operator(ActionGroupEditorOperator.bl_idname, text="Edit")
 
 classes = (
-    ACTIONORGANIZER_UL_ActionGroup,
+    ACTION_ORGANIZER_UL_ActionGroup,
     ActionAssignmentProperty,
     ActionGroupProperty,
     ActionOrganizerProperties,
