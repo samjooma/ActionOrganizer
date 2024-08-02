@@ -2,6 +2,26 @@ import bpy
 import os
 
 #
+# Helper functions.
+#
+
+def action_group_index_is_valid(properties):
+    group_count = len(properties.action_groups)
+    index = properties.active_action_group_index
+    return group_count > 0 and index >= 0 and index < group_count
+
+#
+# UI classes.
+#
+
+class ACTIONORGANIZER_UL_ActionGroup(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
+        if self.layout_type in {"DEFAULT", "COMPACT", "GRID"}:
+            row = layout.row(align=True)
+            row.alignment = "LEFT"
+            row.label(text=item.name, icon_value=icon)
+
+#
 # Properties.
 #
 
@@ -15,10 +35,10 @@ class ActionAssignmentProperty(bpy.types.PropertyGroup):
 class ActionGroupProperty(bpy.types.PropertyGroup):
     name: bpy.props.StringProperty()
     action_assignments: bpy.props.CollectionProperty(type=ActionAssignmentProperty)
-    is_expanded: bpy.props.BoolProperty(default=True)
 
 class ActionOrganizerProperties(bpy.types.PropertyGroup):
     action_groups: bpy.props.CollectionProperty(type=ActionGroupProperty)
+    active_action_group_index: bpy.props.IntProperty()
 
 #
 # Operators.
@@ -44,25 +64,17 @@ class RemoveActionGroupOperator(bpy.types.Operator):
     bl_description = "Description"
     bl_options = {"REGISTER"}
 
-    action_group_index: bpy.props.IntProperty()
-
-    def execute(self, context):
+    @classmethod
+    def poll(self, context):
         properties = context.window_manager.action_organizer
-        properties.action_groups.remove(self.action_group_index)
-        return {"FINISHED"}
+        return action_group_index_is_valid(properties)
     
-class ToggleActionGroupExpandedOperator(bpy.types.Operator):
-    bl_idname = "action_organizer.toggle_action_group_expanded"
-    bl_label = "Toggle action group expanded"
-    bl_description = "Description"
-    bl_options = {"REGISTER"}
-
-    action_group_index: bpy.props.IntProperty()
-
     def execute(self, context):
         properties = context.window_manager.action_organizer
-        action_group = properties.action_groups[self.action_group_index]
-        action_group.is_expanded = not action_group.is_expanded
+        index = properties.active_action_group_index
+        properties.action_groups.remove(index)
+        if properties.active_action_group_index >= index:
+            properties.active_action_group_index = max(0, properties.active_action_group_index - 1)
         return {"FINISHED"}
     
 class CreateActionAssignmentOperator(bpy.types.Operator):
@@ -71,11 +83,15 @@ class CreateActionAssignmentOperator(bpy.types.Operator):
     bl_description = "Description"
     bl_options = {"REGISTER"}
 
-    action_group_index: bpy.props.IntProperty()
-    
+    @classmethod
+    def poll(self, context):
+        properties = context.window_manager.action_organizer
+        return action_group_index_is_valid(properties)
+
     def execute(self, context):
         properties = context.window_manager.action_organizer
-        action_group = properties.action_groups[self.action_group_index]
+        index = properties.active_action_group_index
+        action_group = properties.action_groups[index]
         action_group.action_assignments.add()
         return {"FINISHED"}
     
@@ -85,13 +101,18 @@ class RemoveActionAssignmentOperator(bpy.types.Operator):
     bl_description = "Description"
     bl_options = {"REGISTER"}
 
-    action_group_index: bpy.props.IntProperty()
-    action_assigment_index: bpy.props.IntProperty()
+    action_assignment_index: bpy.props.IntProperty()
+
+    @classmethod
+    def poll(self, context):
+        properties = context.window_manager.action_organizer
+        return action_group_index_is_valid(properties)
 
     def execute(self, context):
         properties = context.window_manager.action_organizer
-        action_group = properties.action_groups[self.action_group_index]
-        action_group.action_assignments.remove(self.action_assigment_index)
+        group_index = properties.active_action_group_index
+        action_group = properties.action_groups[group_index]
+        action_group.action_assignments.remove(self.action_assignment_index)
         return {"FINISHED"}
     
 class SelectActionInGroupOperator(bpy.types.Operator):
@@ -100,13 +121,18 @@ class SelectActionInGroupOperator(bpy.types.Operator):
     bl_description = "Description"
     bl_options = {"REGISTER"}
 
-    action_group_index: bpy.props.IntProperty()
-    action_assigment_index: bpy.props.IntProperty()
+    action_assignment_index: bpy.props.IntProperty()
+
+    @classmethod
+    def poll(self, context):
+        properties = context.window_manager.action_organizer
+        return action_group_index_is_valid(properties)
 
     def execute(self, context):
         properties = context.window_manager.action_organizer
-        action_group = properties.action_groups[self.action_group_index]
-        action_assignment = action_group.action_assignments[self.action_assigment_index]
+        group_index = properties.active_action_group_index
+        action_group = properties.action_groups[group_index]
+        action_assignment = action_group.action_assignments[self.action_assignment_index]
 
         action = action_assignment.action
         assigned_rig_object = action_assignment.assigned_rig_object
@@ -131,23 +157,54 @@ class SelectActionInGroupOperator(bpy.types.Operator):
                 rig_object.animation_data.action = action
 
         return {"FINISHED"}
+    
+class ActiveActionGroupSelectorOperator(bpy.types.Operator):
+    bl_idname = "action_organizer.active_action_group_selector"
+    bl_label = "Select active action group"
+    bl_description = "Description"
+    bl_options = {"REGISTER"}
 
-class ActionOrganizerOperator(bpy.types.Operator):
-    bl_idname = "action_organizer.action_organizer"
-    bl_label = "Action organizer"
+    def invoke(self, context, event):
+        return context.window_manager.invoke_popup(self)
+
+    def execute(self, context):
+        return {"FINISHED"}
+    
+    def draw(self, context):
+        properties = context.window_manager.action_organizer
+        layout = self.layout
+
+        main_row = layout.row()
+
+        main_row.template_list(
+            listtype_name="ACTIONORGANIZER_UL_ActionGroup",
+            list_id="",
+            dataptr=properties,
+            propname="action_groups",
+            active_dataptr=properties,
+            active_propname="active_action_group_index",
+            type="DEFAULT",
+        )
+        
+        right_column = main_row.column(align=True)
+        right_column.operator(CreateActionGroupOperator.bl_idname, text="", icon="ADD")
+        right_column.operator(RemoveActionGroupOperator.bl_idname, text="", icon="REMOVE")
+
+class ActionGroupEditorOperator(bpy.types.Operator):
+    bl_idname = "action_organizer.action_group_editor"
+    bl_label = "Edit action group"
     bl_description = "Description"
     bl_options = {"REGISTER"}
 
     @classmethod
     def poll(self, context):
-        return len(bpy.data.actions) > 0
-
-    def execute(self, context):
         properties = context.window_manager.action_organizer
+        return action_group_index_is_valid(properties)
+    
+    def execute(self, context):
         return {"FINISHED"}
     
     def invoke(self, context, event):
-        properties = context.window_manager.action_organizer
         return context.window_manager.invoke_popup(self)
     
     def draw(self, context):
@@ -156,83 +213,65 @@ class ActionOrganizerOperator(bpy.types.Operator):
         layout = self.layout
         layout.ui_units_x = 25
 
-        groups_data_column = layout.column()
+        group_index = properties.active_action_group_index
+        active_group = properties.action_groups[group_index]
 
-        for action_group_index, action_group in enumerate(properties.action_groups):
-            group_parent = groups_data_column.box()
+        # Group label.
+        group_label_row = layout.row()
+        group_label_row.prop(data=active_group, property="name", text="")
 
-            # Group label.
-            group_label_row = group_parent.row()
-            toggle_expanded_operator = group_label_row.operator(
-                ToggleActionGroupExpandedOperator.bl_idname,
-                text="",
-                icon="DOWNARROW_HLT" if action_group.is_expanded else "RIGHTARROW",
-                emboss=False
-            )
-            toggle_expanded_operator.action_group_index = action_group_index
-            group_label_row.prop(data=action_group, property="name", text="")
+        actions_box = layout.box()
+        for action_assignment_index, action_assignment in enumerate(active_group.action_assignments):
+            action_data_row = actions_box.row()
 
-            # Button to remove action group.
-            remove_group_operator = group_label_row.operator(RemoveActionGroupOperator.bl_idname, text="", icon="REMOVE")
-            remove_group_operator.action_group_index = action_group_index
+            # Button to select action and its assigned object.
+            select_action_operator = action_data_row.operator(SelectActionInGroupOperator.bl_idname, text="Select")
+            select_action_operator.action_assignment_index = action_assignment_index
 
-            if action_group.is_expanded:
-                actions_box = group_parent.box()
-                
-                for action_assignment_index, action_assignment in enumerate(action_group.action_assignments):
-                    action_data_row = actions_box.row()
+            # Selection boxes for action and rig object.
+            action_data_row.prop_search(action_assignment, "action", bpy.data, "actions", text="")
+            action_data_row.prop_search(action_assignment, "assigned_rig_object", context.scene, "objects", text="")
 
-                    # Button to select action and its assigned object.
-                    select_action_operator = action_data_row.operator(SelectActionInGroupOperator.bl_idname, text="Select")
-                    select_action_operator.action_group_index = action_group_index
-                    select_action_operator.action_assigment_index = action_assignment_index
+            # Button to remove action assigment.
+            remove_action_operator = action_data_row.operator(RemoveActionAssignmentOperator.bl_idname, text="", icon="REMOVE")
+            remove_action_operator.action_assignment_index = action_assignment_index
 
-                    # Selection boxes for action and rig object.
-                    action_data_row.prop_search(action_assignment, "action", bpy.data, "actions", text="")
-                    action_data_row.prop_search(action_assignment, "assigned_rig_object", context.scene, "objects", text="")
-
-                    # Button to remove action assigment.
-                    remove_action_operator = action_data_row.operator(RemoveActionAssignmentOperator.bl_idname, text="", icon="REMOVE")
-                    remove_action_operator.action_group_index = action_group_index
-                    remove_action_operator.action_assigment_index = action_assignment_index
-
-                # Button to create action assigment.
-                create_action_row = actions_box.row()
-                assignment_operator = create_action_row.operator(CreateActionAssignmentOperator.bl_idname, icon="ADD")
-                assignment_operator.action_group_index = action_group_index
-        
-        # Button to create action group.
-        create_group_row = layout.row()
-        create_group_row.operator(CreateActionGroupOperator.bl_idname, icon="ADD")
+        # Button to create a new action assigment.
+        create_action_row = actions_box.row()
+        assignment_operator = create_action_row.operator(CreateActionAssignmentOperator.bl_idname, icon="ADD")
 
 #
 # Registration.
 #
 
-def menu_func(self, context):
-    self.layout.operator(ActionOrganizerOperator.bl_idname, text=ActionOrganizerOperator.bl_label)
+def menu_function(self, context):
+    layout = self.layout
+    row = layout.row(align=True)
+    row.operator(ActiveActionGroupSelectorOperator.bl_idname)
+    row.operator(ActionGroupEditorOperator.bl_idname)
 
 classes = (
+    ACTIONORGANIZER_UL_ActionGroup,
     ActionAssignmentProperty,
     ActionGroupProperty,
     ActionOrganizerProperties,
     CreateActionGroupOperator,
     RemoveActionGroupOperator,
-    ToggleActionGroupExpandedOperator,
     CreateActionAssignmentOperator,
     RemoveActionAssignmentOperator,
     SelectActionInGroupOperator,
-    ActionOrganizerOperator,
+    ActiveActionGroupSelectorOperator,
+    ActionGroupEditorOperator,
 )
 
 def register():
     for c in classes:
         bpy.utils.register_class(c)
     bpy.types.WindowManager.action_organizer = bpy.props.PointerProperty(type=ActionOrganizerProperties)
-    bpy.types.DOPESHEET_HT_header.append(menu_func)
+    bpy.types.DOPESHEET_HT_header.append(menu_function)
 
 def unregister():
     for c in classes:
         bpy.utils.unregister_class(c)
     del bpy.types.WindowManager.action_organizer
-    bpy.types.DOPESHEET_HT_header.remove(menu_func)
+    bpy.types.DOPESHEET_HT_header.remove(menu_function)
