@@ -1,5 +1,6 @@
 import bpy
 import os
+import math
 
 #
 # Helper functions.
@@ -40,6 +41,7 @@ def poll_rig_object(self, object):
 class ActionAssignmentProperty(bpy.types.PropertyGroup):
     action: bpy.props.PointerProperty(type=bpy.types.Action)
     assigned_rig_object: bpy.props.PointerProperty(type=bpy.types.Object, poll=poll_rig_object)
+    rig_root_bone: bpy.props.StringProperty(default="root")
 
 class ActionGroupProperty(bpy.types.PropertyGroup):
     name: bpy.props.StringProperty()
@@ -157,7 +159,7 @@ class SelectActionAssignmentOperator(bpy.types.Operator):
                 assigned_rig_object.animation_data.action = action
 
             # Select the rig.
-            if i == self.action_assignment_index:
+            if i == self.action_assignment_index and assigned_rig_object != None:
                 bpy.ops.object.select_all(action="DESELECT")
                 assigned_rig_object.select_set(True)
                 context.view_layer.objects.active = assigned_rig_object
@@ -244,6 +246,105 @@ class ActionGroupEditorOperator(bpy.types.Operator):
         create_action_row = layout.row()
         create_action_row.operator(CreateActionAssignmentOperator.bl_idname, icon="ADD")
 
+class ConvertActionGroupOperator(bpy.types.Operator):
+    bl_idname = "action_organizer.convert_action_groups"
+    bl_label = "Convert action group"
+    bl_description = "Description"
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(self, context):
+        # This operator depends on the rigify converter addon being enabled.
+        if not hasattr(bpy.ops.rigify_converter, "convert"):
+            return False
+        
+        # Check that active group is valid.
+        properties = context.scene.action_organizer
+        group_count = len(properties.action_groups)
+        index = properties.active_action_group_index
+        return group_count > 0 and index > -1 and index < group_count
+
+    def execute(self, context):
+        properties = context.scene.action_organizer
+        action_group = properties.action_groups[properties.active_action_group_index]
+
+        # Check that root bones are valid.
+        for action_assignment in action_group.action_assignments:
+            bone_data = action_assignment.assigned_rig_object.data.bones
+            try:
+                bone_data[action_assignment.rig_root_bone]
+            except:
+                self.report({"ERROR"}, f"Couldn't find root bone \"{action_assignment.rig_root_bone}\" in armature \"{action_assignment.assigned_rig_object.name}\"")
+                return {"CANCELLED"}
+            
+        if not context.mode == "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+        # Set animation data for each armature in this group.
+        for action_assignment in action_group.action_assignments:
+            assigned_rig_object = action_assignment.assigned_rig_object
+            action = action_assignment.action
+            if action != None:
+                if assigned_rig_object.animation_data == None:
+                    assigned_rig_object.animation_data_create()
+                assigned_rig_object.animation_data.action = action
+
+        # Calculate the combined frame range from the beginning of the earliest action to the end of the latest action.
+        combined_frame_range = (float("inf"), float("-inf"))
+        for action_assignment in action_group.action_assignments:
+            action = action_assignment.action
+            frame_range = (math.floor(action.frame_range[0]), math.ceil(action.frame_range[1]))
+            combined_frame_range = (
+                min(combined_frame_range[0], frame_range[0]),
+                max(combined_frame_range[1], frame_range[1]),
+            )
+        # Make frame range at least 2 frames long.
+        combined_frame_range = (
+            combined_frame_range[0],
+            combined_frame_range[1] + 1 if combined_frame_range[0] == combined_frame_range[1] else combined_frame_range[1]
+        )
+            
+        for action_assignment in action_group.action_assignments:
+            assigned_rig_object = action_assignment.assigned_rig_object
+            action = action_assignment.action
+            rig_root_bone = action_assignment.rig_root_bone
+
+            # Set object to be converted.
+            bpy.ops.object.select_all(action="DESELECT")
+            assigned_rig_object.select_set(True)
+            context.view_layer.objects.active = assigned_rig_object
+
+            # Set action to be converted.
+            converter_properties = context.scene.rigify_converter
+            converter_properties.included_actions.clear()
+            action_property = converter_properties.included_actions.add()
+            action_property.action = action
+            action_property.frame_range_start = combined_frame_range[0]
+            action_property.frame_range_end = combined_frame_range[1]
+
+            bpy.ops.rigify_converter.convert(add_as_root_bone=rig_root_bone)
+
+        return {"FINISHED"}
+    
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+    
+    def draw(self, context):
+        properties = context.scene.action_organizer
+        action_group = properties.action_groups[properties.active_action_group_index]
+
+        layout = self.layout
+        box = layout.box()
+        box.label(text="Root bones")
+
+        row = box.row()
+        bone_label_column = row.column()
+        bone_label_column.alignment = "RIGHT"
+        bone_property_column = row.column()
+        for action_assignment in action_group.action_assignments:
+            bone_label_column.label(text=action_assignment.assigned_rig_object.name)
+            bone_property_column.prop(action_assignment, "rig_root_bone", text="")
+
 #
 # Registration.
 #
@@ -258,7 +359,7 @@ def menu_function(self, context):
     row.ui_units_x = 10
     row.operator(ActiveActionGroupSelectorOperator.bl_idname, text="", icon="DOWNARROW_HLT")
 
-    split = row.split(factor=0.75, align=True)
+    split = row.split(factor=0.6, align=True)
 
     if active_group_index_is_valid(properties):
         group_index = properties.active_action_group_index
@@ -266,7 +367,10 @@ def menu_function(self, context):
         split.prop(group, "name", text="")
     else:
         split.operator(CreateActionGroupOperator.bl_idname, text="New")
-    split.operator(ActionGroupEditorOperator.bl_idname, text="Edit")
+    
+    buttons_row = split.row(align=True)
+    buttons_row.operator(ActionGroupEditorOperator.bl_idname, text="Edit")
+    buttons_row.operator(ConvertActionGroupOperator.bl_idname, text="Convert")
 
 classes = (
     ACTION_ORGANIZER_UL_ActionGroup,
@@ -280,6 +384,7 @@ classes = (
     SelectActionAssignmentOperator,
     ActiveActionGroupSelectorOperator,
     ActionGroupEditorOperator,
+    ConvertActionGroupOperator,
 )
 
 def register():
