@@ -11,6 +11,14 @@ def active_group_index_is_valid(properties):
     index = properties.active_action_group_index
     return group_count > 0 and index >= 0 and index < group_count
 
+def get_conversion_root_bone_name(context, rig_object):
+    properties = context.scene.action_organizer
+    return next(x.rig_root_name for x in properties.rig_conversion_properties if x.rig_object == rig_object)
+
+def get_conversion_mesh(context, rig_object):
+    properties = context.scene.action_organizer
+    return next(x.mesh_object for x in properties.rig_conversion_properties if x.rig_object == rig_object)
+
 #
 # UI classes.
 #
@@ -38,18 +46,26 @@ def poll_rig_object(self, object):
     
     return True
 
+def poll_mesh_object(self, object):
+    return object.type == "MESH"
+
 class ActionAssignmentProperty(bpy.types.PropertyGroup):
     action: bpy.props.PointerProperty(type=bpy.types.Action)
     assigned_rig_object: bpy.props.PointerProperty(type=bpy.types.Object, poll=poll_rig_object)
-    rig_root_bone: bpy.props.StringProperty(default="root")
 
 class ActionGroupProperty(bpy.types.PropertyGroup):
     name: bpy.props.StringProperty()
     action_assignments: bpy.props.CollectionProperty(type=ActionAssignmentProperty)
 
+class RigConversionProperty(bpy.types.PropertyGroup):
+    rig_object: bpy.props.PointerProperty(type=bpy.types.Object, poll=poll_rig_object)
+    rig_root_name: bpy.props.StringProperty(default="root")
+    mesh_object: bpy.props.PointerProperty(type=bpy.types.Object, poll=poll_mesh_object)
+
 class ActionOrganizerProperties(bpy.types.PropertyGroup):
     action_groups: bpy.props.CollectionProperty(type=ActionGroupProperty)
     active_action_group_index: bpy.props.IntProperty()
+    rig_conversion_properties: bpy.props.CollectionProperty(type=RigConversionProperty)
 
 #
 # Operators.
@@ -256,31 +272,47 @@ class ConvertActionGroupOperator(bpy.types.Operator):
     def poll(self, context):
         # This operator depends on the rigify converter addon being enabled.
         if not hasattr(bpy.ops.rigify_converter, "convert"):
+            self.poll_message_set(f"Can not convert action groups if action converter addon is not enabled")
             return False
         
-        # Check that active group is valid.
+        # Check that group index is valid.
         properties = context.scene.action_organizer
         group_count = len(properties.action_groups)
         index = properties.active_action_group_index
-        return group_count > 0 and index > -1 and index < group_count
+        if group_count < 1 or index < 0 or index >= group_count:
+            self.poll_message_set(f"Active group index is invalid. Group index: {index}, total groups: {group_count}")
+            return False
+    
+        action_group = properties.action_groups[index]
+        for action_assignment in action_group.action_assignments:
+            rig_object = action_assignment.assigned_rig_object
+
+            # Check that root bones exist in the armature.
+            rig_root_name = get_conversion_root_bone_name(context, rig_object)
+            if rig_root_name not in rig_object.data.bones:
+                self.poll_message_set(f"Root bone \"{rig_root_name}\" could not be found in armature \"{rig_object.name}\"")
+                return False
+            
+            # Check that conversion meshes exist as a child of the armature.
+            mesh_to_convert = get_conversion_mesh(context, rig_object)
+            if mesh_to_convert == None:
+                self.poll_message_set(f"No mesh has been assigned to be converted with armature \"{rig_object.name}\"")
+                return False
+            if mesh_to_convert not in rig_object.children:
+                self.poll_message_set(f"Mesh \"{mesh_to_convert.name}\" could not be found in the children of armature \"{rig_object.name}\"")
+                return False
+
+        return True
 
     def execute(self, context):
         properties = context.scene.action_organizer
         action_group = properties.action_groups[properties.active_action_group_index]
-
-        # Check that root bones are valid.
-        for action_assignment in action_group.action_assignments:
-            bone_data = action_assignment.assigned_rig_object.data.bones
-            try:
-                bone_data[action_assignment.rig_root_bone]
-            except:
-                self.report({"ERROR"}, f"Couldn't find root bone \"{action_assignment.rig_root_bone}\" in armature \"{action_assignment.assigned_rig_object.name}\"")
-                return {"CANCELLED"}
-            
+        
         if not context.mode == "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
 
-        # Set animation data for each armature in this group.
+        # Set animation data for all rigs in the group.
+        # This ensures that animations on different rigs that rely on each other bake correcly, which is basically the whole point of this addon.
         for action_assignment in action_group.action_assignments:
             assigned_rig_object = action_assignment.assigned_rig_object
             action = action_assignment.action
@@ -307,14 +339,20 @@ class ConvertActionGroupOperator(bpy.types.Operator):
         for action_assignment in action_group.action_assignments:
             assigned_rig_object = action_assignment.assigned_rig_object
             action = action_assignment.action
-            rig_root_bone = action_assignment.rig_root_bone
 
-            # Set object to be converted.
+            # Select the rig object that is being converted.
             bpy.ops.object.select_all(action="DESELECT")
             assigned_rig_object.select_set(True)
             context.view_layer.objects.active = assigned_rig_object
 
-            # Set action to be converted.
+            # Select the mesh object that is being converted.
+            mesh_to_convert = get_conversion_mesh(context, action_assignment.assigned_rig_object)
+            mesh_to_convert.select_set(True)
+
+            # Get the root bone used in the conversion.
+            rig_root_name = get_conversion_root_bone_name(context, action_assignment.assigned_rig_object)
+
+            # Set the action that is being converted.
             converter_properties = context.scene.rigify_converter
             converter_properties.included_actions.clear()
             action_property = converter_properties.included_actions.add()
@@ -322,7 +360,7 @@ class ConvertActionGroupOperator(bpy.types.Operator):
             action_property.frame_range_start = combined_frame_range[0]
             action_property.frame_range_end = combined_frame_range[1]
 
-            bpy.ops.rigify_converter.convert(add_as_root_bone=rig_root_bone)
+            bpy.ops.rigify_converter.convert(add_as_root_bone=rig_root_name)
 
         return {"FINISHED"}
     
@@ -343,7 +381,82 @@ class ConvertActionGroupOperator(bpy.types.Operator):
         bone_property_column = row.column()
         for action_assignment in action_group.action_assignments:
             bone_label_column.label(text=action_assignment.assigned_rig_object.name)
-            bone_property_column.prop(action_assignment, "rig_root_bone", text="")
+            bone_property_column.prop(action_assignment, "rig_root_name", text="")
+
+class ConvertAllActionGroupsOperator(bpy.types.Operator):
+    bl_idname = "action_organizer.convert_all_action_groups"
+    bl_label = "Convert all action groups"
+    bl_description = "Convert all action groups"
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(self, context):
+        # This operator depends on the rigify converter addon being enabled.
+        if not hasattr(bpy.ops.rigify_converter, "convert"):
+            return False
+        
+        # Check that there is at least one action group.
+        properties = context.scene.action_organizer
+        return len(properties.action_groups) > 0
+
+    def execute(self, context):
+        properties = context.scene.action_organizer
+
+        for i, action_group in enumerate(properties.action_groups):
+            properties.active_action_group_index = i
+            bpy.ops.action_organizer.convert_action_groups()
+        
+        return {"FINISHED"}
+    
+    def invoke(self, context, event):
+        properties = context.scene.action_organizer
+
+        group = properties.action_groups[properties.active_action_group_index]
+
+        # Avoid clearing valid properties.
+        saved_properties = {}
+        assignment_rigs = [x.assigned_rig_object for x in group.action_assignments if x.assigned_rig_object]
+        for property in properties.rig_conversion_properties:
+            if property.rig_object != None and property.rig_object in assignment_rigs:
+                saved_properties[property.rig_object.name] = {
+                    "rig_root_name": property.rig_root_name,
+                    "mesh_object": property.mesh_object,
+                }
+
+        # Clear and add rig conversion properties.
+        properties.rig_conversion_properties.clear()
+        for rig_object in (x.assigned_rig_object for x in group.action_assignments if x.assigned_rig_object != None):
+            new_property = properties.rig_conversion_properties.add()
+            new_property.rig_object = rig_object
+            try:
+                new_property.rig_root_name = saved_properties[rig_object.name]["rig_root_name"]
+                new_property.mesh_object = saved_properties[rig_object.name]["mesh_object"]
+            except:
+                pass
+        
+        return context.window_manager.invoke_props_dialog(self)
+    
+    def draw(self, context):
+        properties = context.scene.action_organizer
+        layout = self.layout
+
+        # Label.
+        box = layout.box()
+        box.label(text="Root bones")
+
+        # Create columns.
+        row = box.row()
+        bone_label_column = row.column()
+        bone_label_column.alignment = "RIGHT"
+        bone_property_column = row.column()
+        mesh_property_column = row.column()
+
+        # Add a row for each property.
+        for rig_conversion_property in properties.rig_conversion_properties:
+            if rig_conversion_property.rig_object != None:
+                bone_label_column.label(text=rig_conversion_property.rig_object.name)
+                bone_property_column.prop(rig_conversion_property, "rig_root_name", text="")
+                mesh_property_column.prop_search(rig_conversion_property, "mesh_object", context.scene, "objects", text="")
 
 #
 # Registration.
@@ -370,12 +483,13 @@ def menu_function(self, context):
     
     buttons_row = split.row(align=True)
     buttons_row.operator(ActionGroupEditorOperator.bl_idname, text="Edit")
-    buttons_row.operator(ConvertActionGroupOperator.bl_idname, text="Convert")
+    buttons_row.operator(ConvertAllActionGroupsOperator.bl_idname, text="Convert")
 
 classes = (
     ACTION_ORGANIZER_UL_ActionGroup,
     ActionAssignmentProperty,
     ActionGroupProperty,
+    RigConversionProperty,
     ActionOrganizerProperties,
     CreateActionGroupOperator,
     RemoveActionGroupOperator,
@@ -385,6 +499,7 @@ classes = (
     ActiveActionGroupSelectorOperator,
     ActionGroupEditorOperator,
     ConvertActionGroupOperator,
+    ConvertAllActionGroupsOperator,
 )
 
 def register():
